@@ -122,8 +122,9 @@ probe_all_rte_devices(char **argv, int *argc, char *dev_name_list)
 		TRACE_ERROR("Error opening dpdk-face!\n");
 		exit(EXIT_FAILURE);
 	}
-
+	TRACE_ERROR("devnamelist  %s\n", dev_tokenizer);
 	dev_token = strtok_r(dev_tokenizer, delim, &saveptr);
+	TRACE_ERROR("dev token: %s, %zu \n",dev_token, strlen(dev_token));
 	while (dev_token != NULL) {
 		strcpy(pd.ifname, dev_token);
 		if (ioctl(fd, FETCH_PCI_ADDRESS, &pd) == -1) {
@@ -143,6 +144,7 @@ probe_all_rte_devices(char **argv, int *argc, char *dev_name_list)
 			PCI_DEVICE"."PCI_FUNC,
 			pd.pa.domain, pd.pa.bus, pd.pa.device,
 			pd.pa.function);
+		
 		*argc += 2;
 		if (pd.numa_socket > numa_id) numa_id = pd.numa_socket;
 	loop_over:
@@ -312,7 +314,8 @@ SetNetEnv(char *dev_name_list, char *port_stat_list)
 					    "--proc-type=auto"
 		};
 		ret = probe_all_rte_devices(argv, &argc, dev_name_list);
-
+	        strcpy(argv[7], "0000:81:00.0");
+		strcpy(argv[9], "0000:81:00.1");	
 
 		/* STEP 4: build up socket mem parameter */
 		sprintf(socket_mem_str, "%d", socket_mem);
@@ -341,6 +344,11 @@ SetNetEnv(char *dev_name_list, char *port_stat_list)
 			TRACE_INFO("argv[%d]: %s\n", i, argv[i]);
 #endif
 		/* initialize the dpdk eal env */
+		
+		for (i = 0; i < argc; i++)
+			TRACE_ERROR("argv[%d]: %s\n", i, argv[i]);	
+		
+
 		ret = rte_eal_init(argc, argv);
 		if (ret < 0) {
 			TRACE_ERROR("Invalid EAL args!\n");
