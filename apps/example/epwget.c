@@ -229,6 +229,46 @@ CloseConnection(thread_context_t ctx, int sockid)
 	}
 }
 /*----------------------------------------------------------------------------*/
+double frand(){
+	double f = (float)rand() / RAND_MAX;
+	while (!f){
+		f = (float)rand() / RAND_MAX;
+	} 
+	return f;
+}
+/*----------------------------------------------------------------------------*/
+void DoWork(int num_iters) {
+	FILE * fd = fopen("/dev/null", "r");
+	double f = frand();
+	int i;
+	for (i = 0; i < num_iters; ++i) {
+		double f1 = frand();
+		double f2 = frand();
+		f += f1 / f2;
+	}
+	fprintf(fd, "%f", f);
+	fclose(fd);
+	return;	
+}
+/*----------------------------------------------------------------------------*/
+char urls[5][MAX_URL_LEN + 1];
+char* UrlGen(){
+	int dist[5];
+	dist[0] = 20;
+	dist[1] = 40;
+	dist[2] = 60;
+	dist[3] = 80;
+	dist[4] = 100;
+	int choice = rand() % 100;
+	int i;
+	for (i = 0; i < 5; ++i){
+		if (choice < dist[i]) {
+			return urls[i];
+		}
+	}
+	return NULL;
+}
+/*----------------------------------------------------------------------------*/
 static inline int 
 SendHTTPRequest(thread_context_t ctx, int sockid, struct wget_vars *wv)
 {
@@ -236,6 +276,8 @@ SendHTTPRequest(thread_context_t ctx, int sockid, struct wget_vars *wv)
 	struct mtcp_epoll_event ev;
 	int wr;
 	int len;
+	const char * new_url;//[MAX_URL_LEN + 1];
+	new_url = UrlGen();
 
 	wv->headerset = FALSE;
 	wv->recv = 0;
@@ -247,7 +289,7 @@ SendHTTPRequest(thread_context_t ctx, int sockid, struct wget_vars *wv)
 			"Host: %s\r\n"
 //			"Connection: Keep-Alive\r\n\r\n", 
 			"Connection: Close\r\n\r\n", 
-			url, host);
+			new_url, host);
 	len = strlen(request);
 
 	wr = mtcp_write(ctx->mctx, sockid, request, len);
@@ -441,6 +483,7 @@ HandleReadEvent(thread_context_t ctx, int sockid, struct wget_vars *wv)
 			CloseConnection(ctx, sockid);
 		}
 	}
+	DoWork(ctx->stat.reads);
 
 	return 0;
 }
@@ -707,6 +750,12 @@ main(int argc, char **argv)
 	int ret;
 	int i, o;
 	int process_cpu;
+	srand(time(NULL));
+	strcpy(urls[0], "index.html");
+	strcpy(urls[1], "index.html");
+	strcpy(urls[2], "index.html");
+	strcpy(urls[3], "index.html");
+	strcpy(urls[4], "index.html");
 
 	if (argc < 3) {
 		TRACE_CONFIG("Too few arguments!\n");
