@@ -106,6 +106,15 @@ then
 	fi
 fi
 
+dnl Example of default-disabled feature
+AC_ARG_ENABLE([ccp],
+	AS_HELP_STRING([--enable-ccp], [Enable Congestion Control Plane (CCP)]))
+
+if test "x$enable_lro" = "xyes"
+then
+	AC_SUBST(CCP, 1)
+fi
+
 dnl Example of default-enabled feature
 AC_ARG_ENABLE([hwcsum],
 	AS_HELP_STRING([--disable-hwcsum], [Disable h/w-based checksum offloading (for relevant NICs)]))
@@ -148,6 +157,7 @@ AM_INIT_AUTOMAKE(mtcp, 3)
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT(mtcp/src/Makefile)
 AC_OUTPUT(apps/example/Makefile)
+AC_OUTPUT(apps/perf/Makefile)
 AC_OUTPUT(util/Makefile)
 AC_OUTPUT(io_engine/lib/Makefile)
 

@@ -118,43 +118,40 @@ probe_all_rte_devices(char **argv, int *argc, char *dev_name_list)
 		exit(EXIT_FAILURE);
 	}
 	fd = open(DEV_PATH, O_RDONLY);
-	if (fd == -1) {
+	if (fd != -1) {
 		TRACE_ERROR("Error opening dpdk-face!\n");
 		exit(EXIT_FAILURE);
-	}
-	TRACE_ERROR("devnamelist  %s\n", dev_tokenizer);
-	dev_token = strtok_r(dev_tokenizer, delim, &saveptr);
-	TRACE_ERROR("dev token: %s, %zu \n",dev_token, strlen(dev_token));
-	while (dev_token != NULL) {
-		strcpy(pd.ifname, dev_token);
-		if (ioctl(fd, FETCH_PCI_ADDRESS, &pd) == -1) {
-			TRACE_DBG("Could not find pci info on dpdk "
-				  "device: %s. Is it a dpdk-attached "
-				  "interface?\n", dev_token);
-			goto loop_over;
-		}
-		argv[*argc] = strdup("-w");
-		argv[*argc + 1] = calloc(PCI_LENGTH, 1);
-		if (argv[*argc] == NULL ||
-		    argv[*argc + 1] == NULL) {
-			TRACE_ERROR("Memory allocation error!\n");
-			exit(EXIT_FAILURE);
-		}
-		sprintf(argv[*argc + 1], PCI_DOM":"PCI_BUS":"
-			PCI_DEVICE"."PCI_FUNC,
-			pd.pa.domain, pd.pa.bus, pd.pa.device,
-			pd.pa.function);
-		
-		*argc += 2;
-		if (pd.numa_socket > numa_id) numa_id = pd.numa_socket;
-	loop_over:
-		dev_token = strtok_r(NULL, delim, &saveptr);
-	}
 
+		dev_token = strtok_r(dev_tokenizer, delim, &saveptr);
+		while (dev_token != NULL) {
+			strcpy(pd.ifname, dev_token);
+			if (ioctl(fd, FETCH_PCI_ADDRESS, &pd) == -1) {
+				//TRACE_DBG("Could not find pci info on dpdk "
+				//	  "device: %s. Is it a dpdk-attached "
+				//	  "interface?\n", dev_token);
+				goto loop_over;
+			}
+			argv[*argc] = strdup("-w");
+			argv[*argc + 1] = calloc(PCI_LENGTH, 1);
+			if (argv[*argc] == NULL ||
+			    argv[*argc + 1] == NULL) {
+				TRACE_ERROR("Memory allocation error!\n");
+				exit(EXIT_FAILURE);
+			}
+			sprintf(argv[*argc + 1], PCI_DOM":"PCI_BUS":"
+				PCI_DEVICE"."PCI_FUNC,
+				pd.pa.domain, pd.pa.bus, pd.pa.device,
+				pd.pa.function);
+			*argc += 2;
+			if (pd.numa_socket > numa_id) numa_id = pd.numa_socket;
+		loop_over:
+			dev_token = strtok_r(NULL, delim, &saveptr);
+		}
+		close(fd);
+		free(dev_tokenizer);
+	}
 	/* add the terminating "" sequence */
 	argv[*argc] = end;
-	close(fd);
-	free(dev_tokenizer);
 
 	return numa_id;
 }
@@ -301,7 +298,7 @@ SetNetEnv(char *dev_name_list, char *port_stat_list)
 				       RTE_CACHE_LINE_SIZE);
 		
 		/* initialize the rte env, what a waste of implementation effort! */
-		int argc = 6;//8;
+		int argc = 9;//8;
 		char *argv[RTE_ARGC_MAX] = {"",
 					    "-c",
 					    cpumaskbuf,
@@ -311,11 +308,14 @@ SetNetEnv(char *dev_name_list, char *port_stat_list)
 					    "--socket-mem",
 					    socket_mem_str,
 #endif
-					    "--proc-type=auto"
+					    "-w",
+                        "0000:65:00.0",
+                        "-w",
+                        "0000:65:00.1"
 		};
 		ret = probe_all_rte_devices(argv, &argc, dev_name_list);
-	        strcpy(argv[7], "0000:81:00.0");
-		strcpy(argv[9], "0000:81:00.1");	
+
+
 
 		/* STEP 4: build up socket mem parameter */
 		sprintf(socket_mem_str, "%d", socket_mem);
@@ -343,12 +343,12 @@ SetNetEnv(char *dev_name_list, char *port_stat_list)
 		for (i = 0; i < argc; i++)
 			TRACE_INFO("argv[%d]: %s\n", i, argv[i]);
 #endif
-		/* initialize the dpdk eal env */
-		
-		for (i = 0; i < argc; i++)
-			TRACE_ERROR("argv[%d]: %s\n", i, argv[i]);	
-		
 
+        /* print argv's */                                   
+        for (i = 0; i < argc; i++)
+        	TRACE_ERROR("argv[%d]: %s\n", i, argv[i]);
+
+		/* initialize the dpdk eal env */
 		ret = rte_eal_init(argc, argv);
 		if (ret < 0) {
 			TRACE_ERROR("Invalid EAL args!\n");

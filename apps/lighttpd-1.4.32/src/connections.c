@@ -10,7 +10,7 @@
 #include "http_chunk.h"
 #include "stat_cache.h"
 #include "joblist.h"
-
+#include <time.h>
 #include "plugin.h"
 
 #include "inet_ntop_cache.h"
@@ -35,6 +35,43 @@
 #endif
 
 #include "sys-socket.h"
+
+
+double frand(){
+    unsigned int temp = clock();
+	double f = (float) rand_r(&temp) / RAND_MAX; 
+	while (!f){
+        temp = clock();
+		f = (float)rand_r(&temp) / RAND_MAX;
+	} 
+	return f;
+}
+
+void DoWork(int num_iters) {
+	//FILE * fd = fopen("/dev/null", "r");
+	double f = frand();
+	int i;
+	for (i = 0; i < num_iters; ++i) {
+		double f1 = frand();
+		double f2 = frand();
+		f += f1 / f2;
+	}
+	//fprintf(fd, "%f", f);
+	//fclose(fd);
+	return;	
+}
+
+
+
+
+
+
+
+
+
+
+
+
 
 typedef struct {
 	        PLUGIN_DATA;
@@ -1561,9 +1598,16 @@ int connection_state_machine(server *srv, connection *con) {
 
 				break;
 			}
-
+            
+            //fprintf(stderr,"%s",con->uri.path_raw->ptr);
+            if (strstr(con->uri.path_raw->ptr, "1kb.html")) {
+                DoWork(5);
+            } else {
+                DoWork(50);
+            }
 			connection_set_state(srv, con, CON_STATE_WRITE);
 			break;
+        
 		case CON_STATE_RESPONSE_END: /* transient */
 			/* log the request */
 

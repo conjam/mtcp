@@ -9,7 +9,7 @@
 #include <signal.h>
 #include <assert.h>
 #include <sched.h>
-
+#include "math.h"
 #include "cpu.h"
 #include "ps.h"
 #include "eth_in.h"
@@ -28,11 +28,16 @@
 #include "ip_out.h"
 #include "timer.h"
 #include "debug.h"
+#if USE_CCP
+#include "ccp.h"
+#include "libccp/ccp.h"
+#endif
 
 #ifndef DISABLE_DPDK
 /* for launching rte thread */
 #include <rte_launch.h>
 #include <rte_lcore.h>
+#include <rte_ethdev.h>
 #endif
 
 #ifdef ENABLE_ONVM
@@ -68,6 +73,9 @@ static pthread_t g_thread[MAX_CPUS] = {0};
 	(STREAM) || (STATE) || (STAT) || (APP) || (EPOLL)	\
 	|| (DUMP_STREAM)
 static pthread_t log_thread[MAX_CPUS]  = {0};
+#endif
+#if USE_CCP
+static pthread_t ccp_thread[MAX_CPUS] = {0};
 #endif
 /*----------------------------------------------------------------------------*/
 static sem_t g_init_sem[MAX_CPUS];
@@ -182,7 +190,9 @@ static inline void
 PrintThreadNetworkStats(mtcp_manager_t mtcp, struct net_stat *ns)
 {
 	int i;
-
+    
+    
+ 
 	for (i = 0; i < CONFIG.eths_num; i++) {
 		ns->rx_packets[i] = mtcp->nstat.rx_packets[i] - mtcp->p_nstat.rx_packets[i];
 		ns->rx_errors[i] = mtcp->nstat.rx_errors[i] - mtcp->p_nstat.rx_errors[i];
@@ -193,11 +203,12 @@ PrintThreadNetworkStats(mtcp_manager_t mtcp, struct net_stat *ns)
 #if NETSTAT_PERTHREAD
 		if (CONFIG.eths[i].stat_print) {
 			fprintf(stderr, "[CPU%2d] %s flows: %6u, "
-					"RX: %7ld(pps) (err: %5ld), %5.2lf(Gbps), "
+					"RX: %7ld(pps) (err:  %5ld), %5.2lf(Gbps), "
 					"TX: %7ld(pps), %5.2lf(Gbps)\n", 
 					mtcp->ctx->cpu, CONFIG.eths[i].dev_name, mtcp->flow_cnt, 
 					ns->rx_packets[i], ns->rx_errors[i], GBPS(ns->rx_bytes[i]), 
 				ns->tx_packets[i], GBPS(ns->tx_bytes[i]));
+            
 		}
 #endif
 	}
@@ -278,6 +289,11 @@ PrintNetworkStats(mtcp_manager_t mtcp, uint32_t cur_ts)
 	mtcp->p_nstat_ts = cur_ts;
 	gflow_cnt = 0;
 	memset(&g_nstat, 0, sizeof(struct net_stat));
+
+
+    
+    float mean = 0.0;
+    float sd = 0.0;
 	for (i = 0; i < CONFIG.num_cores; i++) {
 		if (running[i]) {
 			PrintThreadNetworkStats(g_mtcp[i], &ns);
@@ -298,13 +314,21 @@ PrintNetworkStats(mtcp_manager_t mtcp, uint32_t cur_ts)
 #endif
 		}
 	}
+    
+    mean = gflow_cnt / CONFIG.num_cores;
+    for (i=0; i < CONFIG.num_cores; i++){
+        if (running[i])
+            sd += pow(g_mtcp[i]->flow_cnt-mean, 2);
+    sd = sqrt(sd/CONFIG.num_cores);
+    } 
+    
 #if NETSTAT_TOTAL
 	for (i = 0; i < CONFIG.eths_num; i++) {
 		if (CONFIG.eths[i].stat_print) {
-			fprintf(stderr, "[ ALL ] %s flows: %6u, "
+			fprintf(stderr, "[ ALL ] %s std dev flows: %5.2lf, "
 					"RX: %7ld(pps) (err: %5ld), %5.2lf(Gbps), "
 					"TX: %7ld(pps), %5.2lf(Gbps)\n", CONFIG.eths[i].dev_name, 
-					gflow_cnt, g_nstat.rx_packets[i], g_nstat.rx_errors[i], 
+					sd, g_nstat.rx_packets[i], g_nstat.rx_errors[i], 
 					GBPS(g_nstat.rx_bytes[i]), g_nstat.tx_packets[i], 
 					GBPS(g_nstat.tx_bytes[i]));
 		}
@@ -918,6 +942,14 @@ InitializeMTCPManager(struct mtcp_thread_context* ctx)
 		return NULL;
 	}
 
+#if USE_CCP
+	mtcp->tcp_sid_table = CreateHashtable(HashSID, EqualSID, NUM_BINS_FLOWS);
+	if (!mtcp->tcp_sid_table) {
+		CTRACE_ERROR("Failed to allocate tcp sid lookup table.\n");
+		return NULL;
+	}
+#endif
+
 	mtcp->listeners = CreateHashtable(HashListener, EqualListener, NUM_BINS_LISTENERS);
 	if (!mtcp->listeners) {
 		CTRACE_ERROR("Failed to allocate listener table.\n");
@@ -1075,6 +1107,38 @@ InitializeMTCPManager(struct mtcp_thread_context* ctx)
 	return mtcp;
 }
 /*----------------------------------------------------------------------------*/
+#if USE_CCP
+static void *
+CCPRecvLoopThread(void *arg) {
+	mtcp_manager_t mtcp = (mtcp_manager_t)arg;
+	mtcp_thread_context_t ctx = mtcp->ctx;
+
+	int cpu = ctx->cpu;
+	mtcp_core_affinitize(cpu);
+
+	TRACE_CCP("ccp recv loop thread started on cpu %d\n", cpu);
+
+	char recvBuf[CCP_MAX_MSG_SIZE];
+	int bytes_recvd;
+	while (!ctx->done && !ctx->exit) {
+		do {
+			bytes_recvd = recvfrom(mtcp->from_ccp, recvBuf, CCP_MAX_MSG_SIZE, 0, NULL, NULL);
+			if (bytes_recvd <= 0) {
+				if (bytes_recvd < 0) {
+					TRACE_ERROR("recv returned %d\n", bytes_recvd);
+				}
+				break;
+			}
+			if (!mtcp->to_ccp) {
+				setup_ccp_send_socket(mtcp);
+			}
+			ccp_read_msg(recvBuf, bytes_recvd);
+		} while(1);
+	}
+	return 0;
+}
+#endif
+/*----------------------------------------------------------------------------*/
 static void *
 MTCPRunThread(void *arg)
 {
@@ -1140,6 +1204,17 @@ MTCPRunThread(void *arg)
 	g_pctx[cpu] = ctx;
 	mlockall(MCL_CURRENT);
 
+#if USE_CCP
+	setup_ccp_connection(mtcp);
+
+	if (pthread_create(&ccp_thread[cpu], NULL,
+		CCPRecvLoopThread, (void *)mtcp) != 0)
+	{
+		TRACE_ERROR("Failed to create thread for CCP receive loop on cpu %d\n", cpu);
+		return NULL;
+	}
+#endif
+
 	// attach (nic device, queue)
 	working = AttachDevice(ctx);
 	if (working != 0) {
@@ -1161,6 +1236,9 @@ MTCPRunThread(void *arg)
 	mtcp_free_context(&m);
 	/* destroy hash tables */
 	DestroyHashtable(g_mtcp[cpu]->tcp_flow_table);
+#if USE_CCP
+	DestroyHashtable(g_mtcp[cpu]->tcp_sid_table);
+#endif
 	DestroyHashtable(g_mtcp[cpu]->listeners);
 	
 	TRACE_DBG("MTCP thread %d finished.\n", ctx->cpu);
@@ -1289,6 +1367,8 @@ mtcp_free_context(mctx_t mctx)
 	int ret, i;
 
 	if (g_pctx[mctx->cpu] == NULL) return;
+
+	flush_log_data(mtcp);
 	
 	TRACE_DBG("CPU %d: mtcp_destroy_context()\n", mctx->cpu);
 
@@ -1331,6 +1411,14 @@ mtcp_free_context(mctx_t mctx)
 #endif
 	fclose(mtcp->log_fp);
 	TRACE_LOG("Log thread %d joined.\n", mctx->cpu);
+
+#if USE_CCP
+	destroy_ccp_connection(mtcp);
+	// pthread_join(ccp_thread[ctx->cpu], NULL);
+	close(mtcp->from_ccp);
+	close(mtcp->to_ccp);
+	TRACE_CCP("CCP thread %d joined.\n", mctx->cpu);
+#endif
 
 	if (mtcp->connectq) {
 		DestroyStreamQueue(mtcp->connectq);
@@ -1523,7 +1611,33 @@ mtcp_init(const char *config_file)
 
 	LoadARPTable();
 	PrintARPTable();
+    //int reta_size = 128; //#TODO: make #define 
+    //int reta_grp = 64;  
+    //
+    //struct rte_eth_rss_reta_entry64 reta_conf[2];
+    //
+    //memset(reta_conf,0,sizeof(reta_conf));
+    //
+    //
+    //
+    //for (i=0; i < reta_size/reta_grp; i++)
+    //    reta_conf[i].mask = UINT64_MAX;
 
+    //for(i=0; i < reta_size; i++) {
+    //    uint32_t reta_id = i / reta_grp;
+    //    uint32_t reta_offset = i % reta_grp;
+    //    reta_conf[reta_id].reta[reta_offset] = (uint16_t)  0;
+
+    //}
+    
+
+
+
+
+
+
+
+         
 	if (signal(SIGUSR1, HandleSignal) == SIG_ERR) {
 		perror("signal, SIGUSR1");
 		return -1;
@@ -1536,7 +1650,21 @@ mtcp_init(const char *config_file)
 
 	/* load system-wide io module specs */
 	current_iomodule_func->load_module();
+   
 
+    //    uint32_t reta_status;                        
+    //    
+    //    reta_status = rte_eth_dev_rss_reta_query(0,
+    //        reta_conf,
+    //        128);
+    //    assert(reta_status == 0);
+    //
+    //for(i=0; i < reta_size; i++) {
+    //    uint32_t reta_id = i / reta_grp;
+    //    uint32_t reta_offset = i % reta_grp;
+    //    fprintf(stderr,"%dth entry in RETA is %ul\n",i,reta_conf[reta_id].reta[reta_offset]);
+    //                                                          
+    //}                                                            
 	return 0;
 }
 /*----------------------------------------------------------------------------*/
@@ -1567,6 +1695,11 @@ mtcp_destroy()
 #ifndef DISABLE_DPDK
 	mpz_clear(CONFIG._cpumask);
 #endif
+
+#ifdef ENABLE_ONVM
+	onvm_nflib_stop(CONFIG.nf_info);
+#endif
+
 	TRACE_INFO("All MTCP threads are joined.\n");
 }
 /*----------------------------------------------------------------------------*/
